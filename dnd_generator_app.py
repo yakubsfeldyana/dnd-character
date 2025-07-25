@@ -1,19 +1,25 @@
+import os
+import random
 import streamlit as st
 from openai import OpenAI
-import random
 
 # -----------------------------
 # Config & OpenAI
 # -----------------------------
 st.set_page_config("🧙 D&D Generator", layout="centered")
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+# Load API key from Streamlit secrets or environment variable
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+AI_ENABLED = bool(OPENAI_API_KEY)
+
+client = OpenAI(api_key=OPENAI_API_KEY) if AI_ENABLED else None
 
 # -----------------------------
 # Constants & helpers
 # -----------------------------
 ABILITIES = ["Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma"]
 
-# PHB-style racial ASIs (simplified: no subraces here)
+# PHB-style racial ASIs (simplified, no subraces)
 RACE_ASI = {
     "Dragonborn": {"Strength": 2, "Charisma": 1},
     "Dwarf": {"Constitution": 2},
@@ -62,6 +68,10 @@ def roll_stat():
     return sum(rolls[:3])
 
 def generate_race_name_ai(race, char_class, gender):
+    # Fallback if no key
+    if not AI_ENABLED:
+        return generate_name()
+
     race_styles = {
         "Dragonborn": "powerful, draconic names, often harsh and guttural",
         "Dwarf": "gritty, earthy Dwarven names that sound sturdy and traditional",
@@ -74,48 +84,55 @@ def generate_race_name_ai(race, char_class, gender):
         "Tiefling": "mysterious, dark names, often with infernal or celestial flair"
     }
     style = race_styles.get(race, "fantasy names")
-
     prompt = (
         f"Generate a unique first and last name for a {gender.lower()} {race} {char_class} "
         f"in D&D. Use {style}. Only return the name."
     )
-
     try:
         resp = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=1.0,
             max_tokens=20,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error generating AI name: {e}"
-
+        return f"(AI Name Error: {e})"
 
 def generate_backstory(name, race, char_class, background, alignment, pronoun):
+    # Fallback if no key
+    if not AI_ENABLED:
+        return (
+            f"{name} is a {alignment.lower()} {race} {char_class} who grew up as a "
+            f"{background.lower()}. {pronoun['subj']} seeks adventure to prove "
+            f"{pronoun['poss']} worth to the world."
+        )
+
     prompt = (
         f"Write a short D&D backstory for this character:\n"
         f"Name: {name}\nRace: {race}\nClass: {char_class}\n"
         f"Background: {background}\nAlignment: {alignment}\n"
         f"Pronouns: {pronoun['subj']}/{pronoun['obj']}/{pronoun['poss']}"
     )
-
     try:
         resp = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.8,
             max_tokens=300,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error generating backstory: {e}"
+        return f"(Backstory Error: {e})"
 
 
 # -----------------------------
 # UI – static data
 # -----------------------------
 st.title("🧙 D&D Character Generator")
+
+if not AI_ENABLED:
+    st.info("⚠️ No OPENAI_API_KEY found. AI name & backstory will use simple fallbacks.")
 
 races = ["Dragonborn", "Dwarf", "Elf", "Gnome", "Half-Elf", "Half-Orc", "Halfling", "Human", "Tiefling"]
 classes = ["Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk", "Paladin", "Ranger", "Rogue",
@@ -127,7 +144,7 @@ alignments = ["Lawful Good", "Neutral Good", "Chaotic Good",
               "Lawful Neutral", "True Neutral", "Chaotic Neutral",
               "Lawful Evil", "Neutral Evil", "Chaotic Evil"]
 
-# Radio labels as constants to prevent mismatches
+# Radio labels (constants so string compares never break)
 ROLL     = "🎲 Roll randomly"
 MANUAL   = "✍️ Enter manually"
 SLIDERS  = "🎚️ Customize with sliders"
@@ -152,9 +169,9 @@ alignment = st.selectbox("⚖️ Pick Alignment", alignments)
 gender = st.radio("🧑‍🤝‍🧑 Pick Gender", genders)
 pronoun = pronouns_map[gender]
 
-# ---- Racial ASIs toggle (AFTER race etc. are defined) ----
+# ---- Racial ASIs toggle ----
 apply_racial = st.checkbox(
-    "Apply PHB racial ASIs (Ability Score Increases)",
+    "Apply PHB racial bonuses",
     value=True,
     help="Adds the PHB default racial bonuses to your final ability scores."
 )
@@ -170,7 +187,6 @@ if apply_racial and race == "Half-Elf":
     )
     if len(half_elf_extras) > 2:
         st.warning("Pick only two. Extra ones will be ignored.")
-        half_elf_extras = half_elf_extras[:2]  # Limit to first two
 
 stat_input_method = st.radio(
     "🎯 Set Ability Scores",
@@ -243,8 +259,9 @@ if st.button("🎲 Create Character"):
 
         # Raise top 2 stats to 15
         for s in priorities:
-            stats[s] = 15
-            allocated += point_cost[15]
+            if allocated + point_cost[15] <= total_points:
+                stats[s] = 15
+                allocated += point_cost[15]
 
         # Try to raise the rest to 10
         for s in ABILITIES:
@@ -263,10 +280,9 @@ if st.button("🎲 Create Character"):
         # Show point-buy remaining
         spent = sum(point_cost.get(val, 0) for val in stats.values())
         remaining = total_points - spent
-        if remaining >= 0:
-            st.success(f"🧮 Point-Buy spent: **{spent} / 27** — Remaining: **{remaining}**")
-        else:
-            st.error(f"🧮 Point-Buy spent: **{spent} / 27** — Remaining: **{remaining}**")
+        (st.success if remaining >= 0 else st.error)(
+            f"🧮 Point-Buy spent: **{spent} / 27** — Remaining: **{remaining}**"
+        )
 
     # Save pre-ASI numbers
     base_stats = stats.copy()
@@ -288,20 +304,22 @@ if st.button("🎲 Create Character"):
         backstory = generate_backstory(name, race, char_class, background, alignment, pronoun)
 
     # -------- Output --------
+    label_base  = "Base ability scores (before lineage bonuses)"
+    label_final = "Final ability scores (after lineage bonuses)"
+
     st.subheader(f"🧝 {name}")
     st.write(f"**Level**: {level} | **Race**: {race} | **Class**: {char_class} | **Background**: {background} | **Alignment**: {alignment}")
 
     st.markdown("### 💪 Ability Scores")
     if apply_racial:
-        st.write("**Base ability scores (before lineage bonuses):**")
+        st.write(f"**{label_base}:**")
         for stat, val in base_stats.items():
             st.write(f"{stat}: {val}")
 
-        st.write("**Final ability scores (after lineage bonuses):**")
+        st.write(f"**{label_final}:**")
         for stat, val in final_stats.items():
             st.write(f"{stat}: {val}")
     else:
-        st.write("**Ability scores:**")
         for stat, val in base_stats.items():
             st.write(f"{stat}: {val}")
 
@@ -317,7 +335,6 @@ Class: {char_class}
 Background: {background}
 Alignment: {alignment}
 Level: {level}
-
 Ability Scores (base – before lineage bonuses):
 """
     for stat, score in base_stats.items():
@@ -329,7 +346,7 @@ Ability Scores (base – before lineage bonuses):
             txt += f"    {stat}: {score}\n"
 
     txt += f"\nBackstory:\n{backstory}\n"
-    txt += "\nNote: This character was created using only options from the official Player's Handbook (PHB).\n"
+    txt += "\nNote: This character was created using only options from the official Player’s Handbook (PHB).\n"
 
     st.download_button(
         label="📄 Download Character Sheet (.txt)",
