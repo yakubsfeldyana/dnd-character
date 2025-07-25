@@ -3,6 +3,21 @@ import random
 import streamlit as st
 from openai import OpenAI
 
+
+import streamlit as st
+
+
+st.markdown("""
+<style>
+/* Hide the hamburger menu (which contains the GitHub link) */
+#MainMenu {visibility: hidden;}
+/* Hide the footer "Made with Streamlit" */
+footer {visibility: hidden;}
+/* (Optional) hide the header */
+header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
 # -----------------------------
 # Config & OpenAI
 # -----------------------------
